@@ -584,10 +584,7 @@ void destroy_entities()
   RCCHECK(rclc_support_fini(&support));
 }
 
-void setup() {
-  // Initialize sensors
-  Wire.begin();
-
+void initialize_sensors() {
   if(!baro.init())
   {
     vehicle_state = VehicleState::BARO_ERROR;
@@ -636,10 +633,9 @@ void setup() {
     ADS.readADC(0);
   }
 
-  // Reset i2c clock after sensor startup
-  Wire.setClock(400000);
+}
 
-  // Initialize controllers
+void initialize_controllers() {
   yaw_controller.errorMode = RSLA::ErrorMode::ANGULAR;
 
   x_controller.derivativeMode = RSLA::DerivativeMode::DERIVATIVE_ON_MEASUREMENT;
@@ -678,6 +674,27 @@ void setup() {
   yaw_controller.bias = 0.0;
   yaw_controller.constraint = 15.0;
   yaw_controller.enableConstraint = true;
+}
+
+void initialize_message_data() {
+  status_msg.data = 0;
+  orientation_msg.orientation.yaw = 0;
+  orientation_msg.orientation.pitch = 0;
+  orientation_msg.orientation.roll = 0;
+  orientation_msg.position.x = 0;
+  orientation_msg.position.y = 0;
+  orientation_msg.position.z = 0;
+}
+
+void setup() {
+  Wire.begin();
+
+  initialize_sensors();
+  
+  // Reset i2c clock after sensor startup
+  Wire.setClock(400000);
+
+  initialize_controllers();
 
   // Initialize MicroROS transport
   Serial.begin(1000000); // This doesn't actually care about the number
@@ -691,15 +708,7 @@ void setup() {
 
   delay(1000);
   
-  // Initialize message data default
-  status_msg.data = 0;
-
-  orientation_msg.orientation.yaw = 0;
-  orientation_msg.orientation.pitch = 0;
-  orientation_msg.orientation.roll = 0;
-  orientation_msg.position.x = 0;
-  orientation_msg.position.y = 0;
-  orientation_msg.position.z = 0;
+  initialize_message_data();
 
   // Initial state
   node_state = NodeState::WAITING_AGENT;
