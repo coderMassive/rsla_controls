@@ -714,6 +714,112 @@ void setup() {
   node_state = NodeState::WAITING_AGENT;
 }
 
+void get_imu() {
+      bno_euler_data = bno.getVector(Adafruit_BNO055::VECTOR_EULER);
+      yaw = bno_euler_data.x();
+      pitch = bno_euler_data.y();
+      roll = -bno_euler_data.z();
+      bno.getCalibration(&bno_sys_cal, &bno_gyro_cal, &bno_acc_cal, &bno_mag_cal);
+}
+
+void get_baro() {
+  baro.read();
+  baro_depth_data = baro.depth();
+  z = baro_depth_data - surface_offset;
+}
+
+void get_battery() {
+#ifdef DEBUG
+  battery_voltage = 16.8;
+#else
+  battery_voltage = ADS.getValue() * (16.23 / 26796);
+#endif
+}
+
+void update_pids(dt) {
+  yaw_controller.update(yaw, dt);
+  pitch_controller.update(pitch, dt);
+  roll_controller.update(roll, dt);
+  x_controller.update(x, dt);
+  y_controller.update(y, dt);
+  z_controller.update(z, dt);
+}
+
+void update_control_vector() {
+  if (x_mode == ControllerMode::EFFORT) {
+    control_vector[0] = x_effort;
+  }
+  else {
+    control_vector[0] = x_controller.output;
+  }
+
+  if (y_mode == ControllerMode::EFFORT) {
+    control_vector[1] = y_effort;
+  }
+  else {
+    control_vector[1] = y_controller.output;
+  }
+
+  if (z_mode == ControllerMode::EFFORT) {
+    control_vector[2] = z_effort;
+  }
+  else {
+    control_vector[2] = z_controller.output;
+  }
+
+  if (roll_mode == ControllerMode::EFFORT) {
+    control_vector[3] = roll_effort;
+  }
+  else {
+    control_vector[3] = roll_controller.output;
+  }
+
+  if (pitch_mode == ControllerMode::EFFORT) {
+    control_vector[4] = pitch_effort;
+  }
+  else {
+    control_vector[4] = pitch_controller.output;
+  }
+
+  if (yaw_mode == ControllerMode::EFFORT) {
+    control_vector[5] = yaw_effort;
+  }
+  else {
+    control_vector[5] = yaw_controller.output;
+  }
+}
+
+void update_output_vectors() {
+  if(vehicle_armed)
+    {
+      for(int i = 0; i < 8; i++)
+      {
+        thruster_forces[i] = thruster_solver.getForce(i);
+        thruster_pwm[i] = thruster_solver.getPWM(i, battery_voltage);
+      }
+    }
+    else
+    {
+      for(int i = 0; i < 8; i++)
+      {
+        thruster_forces[i] = thruster_solver.getForce(i);
+        thruster_pwm[i] = 1500; // Output idle PWM when disarmed
+      }
+    }
+}
+
+void output_to_pwm() {
+  if(loop_time_millis > last_pwm_write_ms + pwm_write_interval_ms)
+    {
+      last_pwm_write_ms = loop_time_millis;
+
+      for(int i = 0; i < 8; i++)
+      {
+        pwm_driver.writeMicroseconds(7 - i, thruster_pwm[i]);
+      }
+    }
+}
+
 void loop() {
   // Loop timing
   uint32_t loop_time_millis = millis();
@@ -732,131 +838,30 @@ void loop() {
   // Main loop code
   if(startup_successful)
   {
-    // Get IMU data
     if(loop_time_millis > last_sensor_update_ms + sensor_update_interval_ms)
     {
       last_sensor_update_ms = loop_time_millis;
-      bno_euler_data = bno.getVector(Adafruit_BNO055::VECTOR_EULER);
-      yaw = bno_euler_data.x();
-      pitch = bno_euler_data.y();
-      roll = -bno_euler_data.z();
 
-      bno.getCalibration(&bno_sys_cal, &bno_gyro_cal, &bno_acc_cal, &bno_mag_cal);
-
-      // Get barometer data
-      baro.read();
-      baro_depth_data = baro.depth();
-      z = baro_depth_data - surface_offset;
-
-      // Get battery voltage
-#ifdef DEBUG
-      battery_voltage = 16.8;
-#else
-      battery_voltage = ADS.getValue() * (16.23 / 26796);
-#endif
+      get_imu();
+      get_baro();
+      get_battery();
 
       new_sensor_data = true;
     }
     
-    // Update PIDs
     if(new_sensor_data)
     {
-      yaw_controller.update(yaw, dt);
-      pitch_controller.update(pitch, dt);
-      roll_controller.update(roll, dt);
-      x_controller.update(x, dt);
-      y_controller.update(y, dt);
-      z_controller.update(z, dt);
-
+      update_pids(dt);
       new_sensor_data = false;
     }
 
-    // Update control vector
-    if(x_mode == ControllerMode::EFFORT)
-    {
-      control_vector[0] = x_effort;
-    }
-    else
-    {
-      control_vector[0] = x_controller.output;
-    }
-
-    if(y_mode == ControllerMode::EFFORT)
-    {
-      control_vector[1] = y_effort;
-    }
-    else
-    {
-      control_vector[1] = y_controller.output;
-    }
-
-    if(z_mode == ControllerMode::EFFORT)
-    {
-      control_vector[2] = z_effort;
-    }
-    else
-    {
-      control_vector[2] = z_controller.output;
-    }
-
-    if(roll_mode == ControllerMode::EFFORT)
-    {
-      control_vector[3] = roll_effort;
-    }
-    else
-    {
-      control_vector[3] = roll_controller.output;
-    }
-
-    if(pitch_mode == ControllerMode::EFFORT)
-    {
-      control_vector[4] = pitch_effort;
-    }
-    else
-    {
-      control_vector[4] = pitch_controller.output;
-    }
-
-    if(yaw_mode == ControllerMode::EFFORT)
-    {
-      control_vector[5] = yaw_effort;
-    }
-    else
-    {
-      control_vector[5] = yaw_controller.output;
-    }
+    update_control_vector();
 
     // Update thruster solution
     thruster_solver.solve(control_vector);
 
-    // Update output vectors
-    if(vehicle_armed)
-    {
-      for(int i = 0; i < 8; i++)
-      {
-        thruster_forces[i] = thruster_solver.getForce(i);
-        thruster_pwm[i] = thruster_solver.getPWM(i, battery_voltage);
-      }
-    }
-    else
-    {
-      for(int i = 0; i < 8; i++)
-      {
-        thruster_forces[i] = thruster_solver.getForce(i);
-        thruster_pwm[i] = 1500; // Output idle PWM when disarmed
-      }
-    }
-
-    // Output to PWM driver
-    if(loop_time_millis > last_pwm_write_ms + pwm_write_interval_ms)
-    {
-      last_pwm_write_ms = loop_time_millis;
-
-      for(int i = 0; i < 8; i++)
-      {
-        pwm_driver.writeMicroseconds(7 - i, thruster_pwm[i]);
-      }
-    }
+    update_output_vectors(); 
+    output_to_pwm();
   }
 
   // Spin ROS node
