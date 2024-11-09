@@ -203,6 +203,140 @@ uint32_t last_sensor_update_ms = 0;
 uint32_t sensor_update_interval_ms = 50; // 20Hz
 bool new_sensor_data = false;
 
+
+//function declarations
+void error_loop();
+void status_callback(rcl_timer_t* timer, int64_t last_call_time);
+void orientation_callback(rcl_timer_t* timer, int64_t last_call_time);
+void telemetry_callback(rcl_timer_t* timer, int64_t last_call_time);
+void battery_voltage_callback(rcl_timer_t* timer, int64_t last_call_time);
+void ping_timer_callback(rcl_timer_t* timer, int64_t last_call_time);
+void pose_setpoint_callback(const void *msgin);
+void wrench_setpoint_callback(const void *msgin);
+void pid_tuning_callback(const void *msgin);
+void sw_arm_callback(const void *msgin);
+void diagnostic_command_callback(const void *msgin);
+bool create_entities();
+void destroy_entities();
+void initialize_sensors();
+void initialize_controllers();
+void initialize_message_data();
+void setup();
+void get_imu();
+void get_baro();
+void get_battery();
+void update_pids(dt);
+void update_control_vector();
+void update_output_vectors();
+void output_to_pwm();
+
+
+
+
+
+
+void loop() {
+  // Loop timing
+  uint32_t loop_time_millis = millis();
+  float dt = (float)(last_loop_ms - loop_time_millis) / 1000.f;
+  last_loop_ms = loop_time_millis;\
+
+  if(node_state == NodeState::AGENT_CONNECTED)
+  {
+    digitalWriteFast(LED_PIN, loop_time_millis % 2000 > 1000);
+  }
+  else
+  {
+    digitalWriteFast(LED_PIN, 0);
+  }
+
+  // Main loop code
+  if(startup_successful)
+  {
+    if(loop_time_millis > last_sensor_update_ms + sensor_update_interval_ms)
+    {
+      last_sensor_update_ms = loop_time_millis;
+
+      get_imu();
+      get_baro();
+      get_battery();
+
+      new_sensor_data = true;
+    }
+    
+    if(new_sensor_data)
+    {
+      update_pids(dt);
+      new_sensor_data = false;
+    }
+
+    update_control_vector();
+
+    // Update thruster solution
+    thruster_solver.solve(control_vector);
+
+    update_output_vectors(); 
+    output_to_pwm();
+  }
+
+  // Spin ROS node
+  switch(node_state)
+  {
+    case NodeState::WAITING_AGENT:
+      EXECUTE_EVERY_N_MS(500, node_state = (RMW_RET_OK == rmw_uros_ping_agent(100, 1) ? NodeState::AGENT_AVAILABLE : NodeState::WAITING_AGENT));
+      break;
+    case NodeState::AGENT_AVAILABLE:
+      node_state = (true == create_entities()) ? NodeState::AGENT_CONNECTED : NodeState::WAITING_AGENT;
+      break;
+    case NodeState::AGENT_CONNECTED:
+      EXECUTE_EVERY_N_MS(200, node_state = (RMW_RET_OK == rmw_uros_ping_agent(100, 1) ? NodeState::AGENT_CONNECTED : NodeState::AGENT_DISCONNECTED));
+      if(node_state == NodeState::AGENT_CONNECTED)
+      {
+        RCSOFTCHECK(rclc_executor_spin_some(&executor, RCL_MS_TO_NS(50)));
+      }
+      break;
+    case NodeState::AGENT_DISCONNECTED:
+      destroy_entities();
+      node_state = NodeState::WAITING_AGENT;
+      break;
+    default:
+      break;
+  }
+}
+
+
+
+
+//-----------Functions--------------------------------------------------------
+
+void setup() {
+  Wire.begin();
+
+  initialize_sensors();
+  
+  // Reset i2c clock after sensor startup
+  Wire.setClock(400000);
+
+  initialize_controllers();
+
+  // Initialize MicroROS transport
+  Serial.begin(1000000); // This doesn't actually care about the number
+  set_microros_serial_transports(Serial);
+  
+  while(!Serial) delay(10); // Loop until serial established
+
+  // Set up error indicators
+  pinMode(LED_PIN, OUTPUT);
+  digitalWrite(LED_PIN, HIGH);
+
+  delay(1000);
+  
+  initialize_message_data();
+
+  // Initial state
+  node_state = NodeState::WAITING_AGENT;
+}
+
 // Eternal loop for unrecoverable errors  
 void error_loop()
 {
@@ -686,34 +820,6 @@ void initialize_message_data() {
   orientation_msg.position.z = 0;
 }
 
-void setup() {
-  Wire.begin();
-
-  initialize_sensors();
-  
-  // Reset i2c clock after sensor startup
-  Wire.setClock(400000);
-
-  initialize_controllers();
-
-  // Initialize MicroROS transport
-  Serial.begin(1000000); // This doesn't actually care about the number
-  set_microros_serial_transports(Serial);
-  
-  while(!Serial) delay(10); // Loop until serial established
-
-  // Set up error indicators
-  pinMode(LED_PIN, OUTPUT);
-  digitalWrite(LED_PIN, HIGH);
-
-  delay(1000);
-  
-  initialize_message_data();
-
-  // Initial state
-  node_state = NodeState::WAITING_AGENT;
-}
-
 void get_imu() {
       bno_euler_data = bno.getVector(Adafruit_BNO055::VECTOR_EULER);
       yaw = bno_euler_data.x();
@@ -818,73 +924,4 @@ void output_to_pwm() {
         pwm_driver.writeMicroseconds(7 - i, thruster_pwm[i]);
       }
     }
-}
-
-void loop() {
-  // Loop timing
-  uint32_t loop_time_millis = millis();
-  float dt = (float)(last_loop_ms - loop_time_millis) / 1000.f;
-  last_loop_ms = loop_time_millis;\
-
-  if(node_state == NodeState::AGENT_CONNECTED)
-  {
-    digitalWriteFast(LED_PIN, loop_time_millis % 2000 > 1000);
-  }
-  else
-  {
-    digitalWriteFast(LED_PIN, 0);
-  }
-
-  // Main loop code
-  if(startup_successful)
-  {
-    if(loop_time_millis > last_sensor_update_ms + sensor_update_interval_ms)
-    {
-      last_sensor_update_ms = loop_time_millis;
-
-      get_imu();
-      get_baro();
-      get_battery();
-
-      new_sensor_data = true;
-    }
-    
-    if(new_sensor_data)
-    {
-      update_pids(dt);
-      new_sensor_data = false;
-    }
-
-    update_control_vector();
-
-    // Update thruster solution
-    thruster_solver.solve(control_vector);
-
-    update_output_vectors(); 
-    output_to_pwm();
-  }
-
-  // Spin ROS node
-  switch(node_state)
-  {
-    case NodeState::WAITING_AGENT:
-      EXECUTE_EVERY_N_MS(500, node_state = (RMW_RET_OK == rmw_uros_ping_agent(100, 1) ? NodeState::AGENT_AVAILABLE : NodeState::WAITING_AGENT));
-      break;
-    case NodeState::AGENT_AVAILABLE:
-      node_state = (true == create_entities()) ? NodeState::AGENT_CONNECTED : NodeState::WAITING_AGENT;
-      break;
-    case NodeState::AGENT_CONNECTED:
-      EXECUTE_EVERY_N_MS(200, node_state = (RMW_RET_OK == rmw_uros_ping_agent(100, 1) ? NodeState::AGENT_CONNECTED : NodeState::AGENT_DISCONNECTED));
-      if(node_state == NodeState::AGENT_CONNECTED)
-      {
-        RCSOFTCHECK(rclc_executor_spin_some(&executor, RCL_MS_TO_NS(50)));
-      }
-      break;
-    case NodeState::AGENT_DISCONNECTED:
-      destroy_entities();
-      node_state = NodeState::WAITING_AGENT;
-      break;
-    default:
-      break;
-  }
 }
