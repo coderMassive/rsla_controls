@@ -44,6 +44,13 @@
 // Hardware objects
 constexpr uint8_t LED_PIN = 13;
 
+// TODO: Test and set these values
+constexpr uint8_t CLAW_ENABLE_PIN;
+constexpr uint8_t CLAW_CW_PIN;
+constexpr uint8_t CLAW_CCW_PIN;
+constexpr uint8_t CLAW_OCM_PIN;
+constexpr uint8_t CLAW_CURRENT_LIMIT;
+
 // Thruster Allocation                                 
 LA::FloatMatrix allocation_matrix = {
     {     0.0,    0.707,      0.0,   -0.707,      0.0,    0.707,      0.0,   -0.707},
@@ -129,6 +136,10 @@ rsla_interfaces__msg__PID pid_tuning_msg;
 // Arming subscriber
 rcl_subscription_t sw_arm_subscriber;
 std_msgs__msg__Bool sw_arm_msg;
+
+// Claw subscriber
+rcl_subscription_t claw_subscriber;
+std_msgs__msg__Bool claw_msg;
 
 // Diagnostics subscriber
 rcl_subscription_t diagnostic_command_subscriber;
@@ -228,6 +239,7 @@ void get_battery();
 void update_pids(dt);
 void update_control_vector();
 void update_output_vectors();
+void control_claw();
 void output_to_pwm();
 
 
@@ -276,6 +288,7 @@ void loop() {
     thruster_solver.solve(control_vector);
 
     update_output_vectors(); 
+    control_claw();
     output_to_pwm();
   }
 
@@ -670,6 +683,9 @@ bool create_entities()
   // Create software arm subscriber
   RCCHECK(rclc_subscription_init_default(&sw_arm_subscriber, &node, ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, Bool), "rsla/controls/sw_arm"));
 
+  // Create claw subscriber
+  RCCHECK(rclc_subscription_init_default(&claw_subscriber, &node, ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, Bool), "rsla/controls/claw"));
+
   // Create diagnostic command subscriber
   RCCHECK(rclc_subscription_init_default(&diagnostic_command_subscriber, &node, ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, Int8), "rsla/controls/diagnostic_command"));
 
@@ -912,6 +928,27 @@ void update_output_vectors() {
         thruster_pwm[i] = 1500; // Output idle PWM when disarmed
       }
     }
+}
+
+void control_claw() {
+  if(claw_msg.data && analogRead(CLAW_OCM_PIN) < CLAW_CURRENT_LIMIT)
+  {
+    // open claw
+    digitalWriteFast(CLAW_ENABLE_PIN, 1);
+    digitalWriteFast(CLAW_CW_PIN, 1);
+    digitalWriteFast(CLAW_CCW_PIN, 0);
+  }
+  else if(!claw_msg.data && analogRead(CLAW_OCM_PIN) < CLAW_CURRENT_LIMIT)
+  {
+    // close claw
+    digitalWriteFast(CLAW_ENABLE_PIN, 1);
+    digitalWriteFast(CLAW_CW_PIN, 0);
+    digitalWriteFast(CLAW_CCW_PIN, 1);
+  }
+  else
+  {
+    digitalWriteFast(CLAW_ENABLE_PIN, 0);
+  }
 }
 
 void output_to_pwm() {
