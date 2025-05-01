@@ -236,11 +236,11 @@ void setup();
 void get_imu();
 void get_baro();
 void get_battery();
-void update_pids(dt);
+void update_pids(float dt);
 void update_control_vector();
 void update_output_vectors();
 void control_claw();
-void output_to_pwm();
+void output_to_pwm(uint32_t loop_time_millis);
 
 
 
@@ -289,7 +289,7 @@ void loop() {
 
     update_output_vectors(); 
     control_claw();
-    output_to_pwm();
+    output_to_pwm(loop_time_millis);
   }
 
   // Spin ROS node
@@ -858,7 +858,7 @@ void get_battery() {
 #endif
 }
 
-void update_pids(dt) {
+void update_pids(float dt) {
   yaw_controller.update(yaw, dt);
   pitch_controller.update(pitch, dt);
   roll_controller.update(roll, dt);
@@ -951,7 +951,7 @@ void control_claw() {
   }
 }
 
-void output_to_pwm() {
+void output_to_pwm(uint32_t loop_time_millis) {
   if(loop_time_millis > last_pwm_write_ms + pwm_write_interval_ms)
     {
       last_pwm_write_ms = loop_time_millis;
