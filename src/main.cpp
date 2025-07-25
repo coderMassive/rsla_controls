@@ -44,12 +44,9 @@
 // Hardware objects
 constexpr uint8_t LED_PIN = 13;
 
-// TODO: Test and set these values
-constexpr uint8_t CLAW_ENABLE_PIN;
-constexpr uint8_t CLAW_CW_PIN;
-constexpr uint8_t CLAW_CCW_PIN;
-constexpr uint8_t CLAW_OCM_PIN;
-constexpr uint8_t CLAW_CURRENT_LIMIT;
+// Claw pins
+constexpr uint8_t CLAW_CW_PIN = 15;
+constexpr uint8_t CLAW_CCW_PIN = 16;
 
 // Thruster Allocation                                 
 LA::FloatMatrix allocation_matrix = {
@@ -249,72 +246,82 @@ void output_to_pwm(uint32_t loop_time_millis);
 
 void loop() {
   // Loop timing
-  uint32_t loop_time_millis = millis();
-  float dt = (float)(last_loop_ms - loop_time_millis) / 1000.f;
-  last_loop_ms = loop_time_millis;\
+  // uint32_t loop_time_millis = millis();
+  // float dt = (float)(last_loop_ms - loop_time_millis) / 1000.f;
+  // last_loop_ms = loop_time_millis;
 
-  if(node_state == NodeState::AGENT_CONNECTED)
-  {
-    digitalWriteFast(LED_PIN, loop_time_millis % 2000 > 1000);
-  }
-  else
-  {
-    digitalWriteFast(LED_PIN, 0);
-  }
+  // if(node_state == NodeState::AGENT_CONNECTED)
+  // {
+  //   digitalWriteFast(LED_PIN, loop_time_millis % 2000 > 1000);
+  // }
+  // else
+  // {
+  //   digitalWriteFast(LED_PIN, 0);
+  // }
 
   // Main loop code
-  if(startup_successful)
-  {
-    if(loop_time_millis > last_sensor_update_ms + sensor_update_interval_ms)
-    {
-      last_sensor_update_ms = loop_time_millis;
+  // if(startup_successful)
+  // {
+    // if(loop_time_millis > last_sensor_update_ms + sensor_update_interval_ms)
+    // {
+    //   last_sensor_update_ms = loop_time_millis;
 
-      get_imu();
-      get_baro();
-      get_battery();
+    //   get_imu();
+    //   get_baro();
+    //   get_battery();
 
-      new_sensor_data = true;
-    }
+    //   new_sensor_data = true;
+    // }
     
-    if(new_sensor_data)
-    {
-      update_pids(dt);
-      new_sensor_data = false;
-    }
+    // if(new_sensor_data)
+    // {
+    //   update_pids(dt);
+    //   new_sensor_data = false;
+    // }
 
-    update_control_vector();
+    // update_control_vector();
 
-    // Update thruster solution
-    thruster_solver.solve(control_vector);
+    // // Update thruster solution
+    // thruster_solver.solve(control_vector);
 
-    update_output_vectors(); 
-    control_claw();
-    output_to_pwm(loop_time_millis);
-  }
+    // update_output_vectors(); 
+    // control_claw();
+    // output_to_pwm(loop_time_millis);
+  // }
 
   // Spin ROS node
-  switch(node_state)
-  {
-    case NodeState::WAITING_AGENT:
-      EXECUTE_EVERY_N_MS(500, node_state = (RMW_RET_OK == rmw_uros_ping_agent(100, 1) ? NodeState::AGENT_AVAILABLE : NodeState::WAITING_AGENT));
-      break;
-    case NodeState::AGENT_AVAILABLE:
-      node_state = (true == create_entities()) ? NodeState::AGENT_CONNECTED : NodeState::WAITING_AGENT;
-      break;
-    case NodeState::AGENT_CONNECTED:
-      EXECUTE_EVERY_N_MS(200, node_state = (RMW_RET_OK == rmw_uros_ping_agent(100, 1) ? NodeState::AGENT_CONNECTED : NodeState::AGENT_DISCONNECTED));
-      if(node_state == NodeState::AGENT_CONNECTED)
-      {
-        RCSOFTCHECK(rclc_executor_spin_some(&executor, RCL_MS_TO_NS(50)));
-      }
-      break;
-    case NodeState::AGENT_DISCONNECTED:
-      destroy_entities();
-      node_state = NodeState::WAITING_AGENT;
-      break;
-    default:
-      break;
-  }
+  // switch(node_state)
+  // {
+  //   case NodeState::WAITING_AGENT:
+  //     EXECUTE_EVERY_N_MS(500, node_state = (RMW_RET_OK == rmw_uros_ping_agent(100, 1) ? NodeState::AGENT_AVAILABLE : NodeState::WAITING_AGENT));
+  //     break;
+  //   case NodeState::AGENT_AVAILABLE:
+  //     node_state = (true == create_entities()) ? NodeState::AGENT_CONNECTED : NodeState::WAITING_AGENT;
+  //     break;
+  //   case NodeState::AGENT_CONNECTED:
+  //     EXECUTE_EVERY_N_MS(200, node_state = (RMW_RET_OK == rmw_uros_ping_agent(100, 1) ? NodeState::AGENT_CONNECTED : NodeState::AGENT_DISCONNECTED));
+  //     if(node_state == NodeState::AGENT_CONNECTED)
+  //     {
+  //       RCSOFTCHECK(rclc_executor_spin_some(&executor, RCL_MS_TO_NS(50)));
+  //     }
+  //     break;
+  //   case NodeState::AGENT_DISCONNECTED:
+  //     destroy_entities();
+  //     node_state = NodeState::WAITING_AGENT;
+  //     break;
+  //   default:
+  //     break;
+  // }
+
+  digitalWriteFast(CLAW_CW_PIN, HIGH);
+  digitalWriteFast(CLAW_CCW_PIN, LOW);
+
+  delay(1000);
+
+  digitalWriteFast(CLAW_CW_PIN, LOW);
+  digitalWriteFast(CLAW_CCW_PIN, HIGH);
+
+  delay(1000);
 }
 
 
@@ -323,31 +330,34 @@ void loop() {
 //-----------Functions--------------------------------------------------------
 
 void setup() {
-  Wire.begin();
+//   Wire.begin();
 
-  initialize_sensors();
+//   initialize_sensors();
   
-  // Reset i2c clock after sensor startup
-  Wire.setClock(400000);
+//   // Reset i2c clock after sensor startup
+//   Wire.setClock(400000);
 
-  initialize_controllers();
+//   initialize_controllers();
 
-  // Initialize MicroROS transport
-  Serial.begin(1000000); // This doesn't actually care about the number
-  set_microros_serial_transports(Serial);
+//   // Initialize MicroROS transport
+//   Serial.begin(1000000); // This doesn't actually care about the number
+//   set_microros_serial_transports(Serial);
   
-  while(!Serial) delay(10); // Loop until serial established
+//   while(!Serial) delay(10); // Loop until serial established
 
-  // Set up error indicators
-  pinMode(LED_PIN, OUTPUT);
-  digitalWrite(LED_PIN, HIGH);
+//   // Set up error indicators
+//   pinMode(LED_PIN, OUTPUT);
+//   digitalWrite(LED_PIN, HIGH);
 
-  delay(1000);
+    pinMode(CLAW_CCW_PIN, OUTPUT);
+    pinMode(CLAW_CW_PIN, OUTPUT);
+
+//   delay(1000);
   
-  initialize_message_data();
+//   initialize_message_data();
 
-  // Initial state
-  node_state = NodeState::WAITING_AGENT;
+//   // Initial state
+//   node_state = NodeState::WAITING_AGENT;
 }
 
 // Eternal loop for unrecoverable errors  
@@ -931,23 +941,17 @@ void update_output_vectors() {
 }
 
 void control_claw() {
-  if(claw_msg.data && analogRead(CLAW_OCM_PIN) < CLAW_CURRENT_LIMIT)
+  if(claw_msg.data)
   {
     // open claw
-    digitalWriteFast(CLAW_ENABLE_PIN, 1);
     digitalWriteFast(CLAW_CW_PIN, 1);
     digitalWriteFast(CLAW_CCW_PIN, 0);
   }
-  else if(!claw_msg.data && analogRead(CLAW_OCM_PIN) < CLAW_CURRENT_LIMIT)
-  {
-    // close claw
-    digitalWriteFast(CLAW_ENABLE_PIN, 1);
-    digitalWriteFast(CLAW_CW_PIN, 0);
-    digitalWriteFast(CLAW_CCW_PIN, 1);
-  }
   else
   {
-    digitalWriteFast(CLAW_ENABLE_PIN, 0);
+    // close claw
+    digitalWriteFast(CLAW_CW_PIN, 0);
+    digitalWriteFast(CLAW_CCW_PIN, 1);
   }
 }
 
