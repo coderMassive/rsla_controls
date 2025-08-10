@@ -6,6 +6,7 @@
 #include <Adafruit_Sensor.h>
 #include <Adafruit_BNO055.h>
 #include <Adafruit_PWMServoDriver.h>
+#include <Servo.h>
 
 #include <MS5837.h>
 
@@ -44,9 +45,9 @@
 // Hardware objects
 constexpr uint8_t LED_PIN = 13;
 
-// Claw pins
-constexpr uint8_t CLAW_CW_PIN = 15;
-constexpr uint8_t CLAW_CCW_PIN = 16;
+constexpr uint8_t BALL_DROPPER_PIN = 12;
+
+Servo ball_dropper;
 
 // Thruster Allocation                                 
 LA::FloatMatrix allocation_matrix = {
@@ -134,9 +135,9 @@ rsla_interfaces__msg__PID pid_tuning_msg;
 rcl_subscription_t sw_arm_subscriber;
 std_msgs__msg__Bool sw_arm_msg;
 
-// Claw subscriber
-rcl_subscription_t claw_subscriber;
-std_msgs__msg__Bool claw_msg;
+// Ball Dropper subscriber
+rcl_subscription_t ball_dropper_subscriber;
+std_msgs__msg__Int8 ball_dropper_msg;
 
 // Diagnostics subscriber
 rcl_subscription_t diagnostic_command_subscriber;
@@ -236,7 +237,7 @@ void get_battery();
 void update_pids(float dt);
 void update_control_vector();
 void update_output_vectors();
-void control_claw();
+void control_ball_dropper();
 void output_to_pwm(uint32_t loop_time_millis);
 
 void loop() {
@@ -280,7 +281,7 @@ void loop() {
     thruster_solver.solve(control_vector);
 
     update_output_vectors(); 
-    control_claw();
+    control_ball_dropper();
     output_to_pwm(loop_time_millis);
   }
 
@@ -333,9 +334,6 @@ void setup() {
   // Set up error indicators
   pinMode(LED_PIN, OUTPUT);
   digitalWrite(LED_PIN, HIGH);
-
-    pinMode(CLAW_CCW_PIN, OUTPUT);
-    pinMode(CLAW_CW_PIN, OUTPUT);
 
   delay(1000);
   
@@ -678,8 +676,8 @@ bool create_entities()
   // Create software arm subscriber
   RCCHECK(rclc_subscription_init_default(&sw_arm_subscriber, &node, ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, Bool), "rsla/controls/sw_arm"));
 
-  // Create claw subscriber
-  RCCHECK(rclc_subscription_init_default(&claw_subscriber, &node, ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, Bool), "rsla/controls/claw"));
+  // Create ball dropper subscriber
+  RCCHECK(rclc_subscription_init_default(&ball_dropper_subscriber, &node, ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, Int8), "rsla/controls/ball_dropper"));
 
   // Create diagnostic command subscriber
   RCCHECK(rclc_subscription_init_default(&diagnostic_command_subscriber, &node, ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, Int8), "rsla/controls/diagnostic_command"));
@@ -925,19 +923,13 @@ void update_output_vectors() {
     }
 }
 
-void control_claw() {
-  if(claw_msg.data)
-  {
-    // open claw
-    digitalWriteFast(CLAW_CW_PIN, 1);
-    digitalWriteFast(CLAW_CCW_PIN, 0);
-  }
-  else
-  {
-    // close claw
-    digitalWriteFast(CLAW_CW_PIN, 0);
-    digitalWriteFast(CLAW_CCW_PIN, 1);
-  }
+void control_ball_dropper() {
+    switch (ball_dropper_msg.data) {
+        case 0: ball_dropper.write(90); break; // neutral
+        case 1: ball_dropper.write(135); break; // left ball
+        case 2: ball_dropper.write(45); break; // right ball
+        default: break;
+    }
 }
 
 void output_to_pwm(uint32_t loop_time_millis) {
