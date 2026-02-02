@@ -4,13 +4,11 @@
 #include <SPI.h>
 #include <Wire.h>
 #include <Adafruit_Sensor.h>
-#include <Adafruit_BNO055.h>
 #include <Adafruit_PWMServoDriver.h>
 #include <Servo.h>
+#include <math.h>
 
-#include <MS5837.h>
-
-#include <ADS1X15.h>
+#include <ADS1115.h>
 
 #include <LibAlg.hpp>
 #include <PID.hpp>
@@ -27,6 +25,9 @@
 #include <std_msgs/msg/int32.h>
 #include <std_msgs/msg/float32.h>
 
+#include <geometry_msgs/msg/point.h>
+#include <geometry_msgs/msg/quaternion.h>
+
 #include <rsla_interfaces/msg/euler_angles.h>
 #include <rsla_interfaces/msg/pose_euler.h>
 #include <rsla_interfaces/msg/pid.h>
@@ -38,7 +39,7 @@
   static volatile int64_t init = -1; \
   if (init == -1) { init = uxr_millis();} \
   if (uxr_millis() - init > MS) { X; init = uxr_millis();} \
-} while(0)\
+} while(0)
 
 //#define DEBUG
 
@@ -64,8 +65,6 @@ enum class VehicleState : int8_t
 {
   ADC_ERROR = -4,
   PWM_ERROR = -3,
-  BARO_ERROR = -2,
-  IMU_ERROR = -1,
   IDLE = 0,
   ARMED = 1
 } vehicle_state;
@@ -127,6 +126,12 @@ rsla_interfaces__msg__PoseWithMask pose_setpoint_msg;
 rcl_subscription_t wrench_setpoint_subscriber;
 rsla_interfaces__msg__WrenchWithMask wrench_setpoint_msg;
 
+rcl_subscription_t quaternion_subscriber;
+geometry_msgs__msg__Quaternion quaternion_msg;
+
+rcl_subscription_t dvl_subscriber;
+geometry_msgs__msg__Point dvl_msg;
+
 // Tuning subscriber
 rcl_subscription_t pid_tuning_subscriber;
 rsla_interfaces__msg__PID pid_tuning_msg;
@@ -154,14 +159,6 @@ rcl_node_t node;
 #define RCSOFTCHECK(fn) { rcl_ret_t temp_rc = fn; if((temp_rc != RCL_RET_OK)){}}
 
 // Sensor objects
-Adafruit_BNO055 bno = Adafruit_BNO055(-1, 0x28, &Wire);
-imu::Vector<3> bno_euler_data;
-uint8_t bno_sys_cal, bno_gyro_cal, bno_acc_cal, bno_mag_cal = 0;
-
-MS5837 baro(0x76, &Wire);
-float baro_depth_data = 0;
-float surface_offset = 0;
-
 Adafruit_PWMServoDriver pwm_driver(0x40);
 
 ADS1113 ADS(0x48);
@@ -225,14 +222,14 @@ void wrench_setpoint_callback(const void *msgin);
 void pid_tuning_callback(const void *msgin);
 void sw_arm_callback(const void *msgin);
 void diagnostic_command_callback(const void *msgin);
+void quaternion_callback(const void* msgin);
+void dvl_callback(const void* msgin);
 bool create_entities();
 void destroy_entities();
 void initialize_sensors();
 void initialize_controllers();
 void initialize_message_data();
 void setup();
-void get_imu();
-void get_baro();
 void get_battery();
 void update_pids(float dt);
 void update_control_vector();
@@ -262,8 +259,6 @@ void loop() {
     {
       last_sensor_update_ms = loop_time_millis;
 
-      get_imu();
-      get_baro();
       get_battery();
 
       new_sensor_data = true;
@@ -335,8 +330,7 @@ void setup() {
   pinMode(LED_PIN, OUTPUT);
   digitalWrite(LED_PIN, HIGH);
 
-  delay(1000);
-  
+  delay(1000);  
   initialize_message_data();
 
   // Initial state
@@ -366,12 +360,6 @@ void status_callback(rcl_timer_t* timer, int64_t last_call_time)
     {
       case VehicleState::PWM_ERROR:
         status = -3;
-        break;
-      case VehicleState::BARO_ERROR:
-        status = -2;
-        break;
-      case VehicleState::IMU_ERROR:
-        status = -1;
         break;
       case VehicleState::IDLE:
         status = 0;
@@ -424,10 +412,10 @@ void telemetry_callback(rcl_timer_t* timer, int64_t last_call_time)
     memcpy(&telemetry_msg.thruster_vector, &thruster_forces, 8 * sizeof(float));
     memcpy(&telemetry_msg.pwm_output, &thruster_pwm, 8 * sizeof(uint16_t));
 
-    telemetry_msg.imu_calibration[0] = bno_sys_cal;
-    telemetry_msg.imu_calibration[1] = bno_gyro_cal;
-    telemetry_msg.imu_calibration[2] = bno_acc_cal;
-    telemetry_msg.imu_calibration[3] = bno_mag_cal;
+    telemetry_msg.imu_calibration[0] = 0;
+    telemetry_msg.imu_calibration[1] = 0;
+    telemetry_msg.imu_calibration[2] = 0;
+    telemetry_msg.imu_calibration[3] = 0;
 
     RCSOFTCHECK(rcl_publish(&telemetry_publisher, &telemetry_msg, NULL));
   }
@@ -562,7 +550,7 @@ void pid_tuning_callback(const void *msgin)
   
   float bias = msg->bias;
 
-  float constraint = msg->constraint;
+  float constraint = msg.constraint;
   bool enable_constraint = constraint > 0;
 
   RSLA::PID *controller;
@@ -633,13 +621,43 @@ void diagnostic_command_callback(const void *msgin)
   // Miscellatious diagnostic commands
   switch(msg->data)
   {
-    case 1:
-      // Reset surface offset
-      surface_offset = baro_depth_data;
-      break;
     default:
       break;
   }
+}
+
+
+// DVL callback
+void dvl_callback(const void* msgin)
+{
+    const geometry_msgs__msg__Point* msg = (const geometry_msgs__msg__Point*)msgin;
+    x = msg->x;
+    y = msg->y;
+    z = msg->z;
+}
+
+// AHRS quaternion callback
+void quaternion_callback(const void* msgin)
+{
+    const geometry_msgs__msg__Quaternion* q = (const geometry_msgs__msg__Quaternion*)msgin;
+
+    // Conversion to Euler Angles from Quaternion
+    // roll (x-axis rotation)
+    double sinr_cosp = 2 * (q->w * q->x + q->y * q->z);
+    double cosr_cosp = 1 - 2 * (q->x * q->x + q->y * q->y);
+    roll = atan2(sinr_cosp, cosr_cosp);
+
+    // pitch (y-axis rotation)
+    double sinp = 2 * (q->w * q->y - q->z * q->x);
+    if (abs(sinp) >= 1)
+        pitch = copysign(M_PI / 2, sinp); // use 90 degrees if out of range
+    else
+        pitch = asin(sinp);
+
+    // yaw (z-axis rotation)
+    double siny_cosp = 2 * (q->w * q->z + q->x * q->y);
+    double cosy_cosp = 1 - 2 * (q->y * q->y + q->z * q->z);
+    yaw = atan2(siny_cosp, cosy_cosp);
 }
 
 // Create ROS entities
@@ -670,6 +688,10 @@ bool create_entities()
   RCCHECK(rclc_subscription_init_default(&pose_setpoint_subscriber, &node, ROSIDL_GET_MSG_TYPE_SUPPORT(rsla_interfaces, msg, PoseWithMask), "rsla/autonomy/pose_setpoint_with_mask"));
   RCCHECK(rclc_subscription_init_default(&wrench_setpoint_subscriber, &node, ROSIDL_GET_MSG_TYPE_SUPPORT(rsla_interfaces, msg, WrenchWithMask), "rsla/autonomy/wrench_setpoint_with_mask"));
 
+  // Create AHRS and DVL subscribers
+  RCCHECK(rclc_subscription_init_default(&quaternion_subscriber, &node, ROSIDL_GET_MSG_TYPE_SUPPORT(geometry_msgs, msg, Quaternion), "/ahrs/quaternion"));
+  RCCHECK(rclc_subscription_init_default(&dvl_subscriber, &node, ROSIDL_GET_MSG_TYPE_SUPPORT(geometry_msgs, msg, Point), "/dvl/point"));
+
   // Create tuning subscriber
   RCCHECK(rclc_subscription_init_default(&pid_tuning_subscriber, &node, ROSIDL_GET_MSG_TYPE_SUPPORT(rsla_interfaces, msg, PID), "rsla/controls/pid_controller_gains"));
 
@@ -683,7 +705,7 @@ bool create_entities()
   RCCHECK(rclc_subscription_init_default(&diagnostic_command_subscriber, &node, ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, Int8), "rsla/controls/diagnostic_command"));
 
   // Create executor
-  RCCHECK(rclc_executor_init(&executor, &support.context, 10, &allocator));
+  RCCHECK(rclc_executor_init(&executor, &support.context, 12, &allocator));
 
   // Add timers to executor
   RCCHECK(rclc_executor_add_timer(&executor, &status_timer));
@@ -694,6 +716,8 @@ bool create_entities()
   // Add subscribers to executor
   RCCHECK(rclc_executor_add_subscription(&executor, &pose_setpoint_subscriber, &pose_setpoint_msg, &pose_setpoint_callback, ON_NEW_DATA));
   RCCHECK(rclc_executor_add_subscription(&executor, &wrench_setpoint_subscriber, &wrench_setpoint_msg, &wrench_setpoint_callback, ON_NEW_DATA));
+  RCCHECK(rclc_executor_add_subscription(&executor, &quaternion_subscriber, &quaternion_msg, &quaternion_callback, ON_NEW_DATA));
+  RCCHECK(rclc_executor_add_subscription(&executor, &dvl_subscriber, &dvl_msg, &dvl_callback, ON_NEW_DATA));
   RCCHECK(rclc_executor_add_subscription(&executor, &pid_tuning_subscriber, &pid_tuning_msg, &pid_tuning_callback, ON_NEW_DATA));
   RCCHECK(rclc_executor_add_subscription(&executor, &sw_arm_subscriber, &sw_arm_msg, &sw_arm_callback, ON_NEW_DATA));
   RCCHECK(rclc_executor_add_subscription(&executor, &diagnostic_command_subscriber, &diagmonst_command_msg, &diagnostic_command_callback, ON_NEW_DATA));
@@ -718,6 +742,8 @@ void destroy_entities()
 
   RCCHECK(rcl_subscription_fini(&pose_setpoint_subscriber, &node));
   RCCHECK(rcl_subscription_fini(&wrench_setpoint_subscriber, &node));
+  RCCHECK(rcl_subscription_fini(&quaternion_subscriber, &node));
+  RCCHECK(rcl_subscription_fini(&dvl_subscriber, &node));
   RCCHECK(rcl_subscription_fini(&pid_tuning_subscriber, &node));
   RCCHECK(rcl_subscription_fini(&sw_arm_subscriber, &node));
   RCCHECK(rcl_subscription_fini(&diagnostic_command_subscriber, &node));
@@ -728,27 +754,6 @@ void destroy_entities()
 }
 
 void initialize_sensors() {
-  if(!baro.init())
-  {
-    vehicle_state = VehicleState::BARO_ERROR;
-    startup_successful = false;
-  }
-  else
-  {
-    baro.setFluidDensity(997);
-  }
-
-  if(!bno.begin())
-  {
-    vehicle_state = VehicleState::IMU_ERROR;
-    startup_successful = false;
-  }
-  else
-  {
-    bno.setMode(OPERATION_MODE_IMUPLUS);
-    bno.setExtCrystalUse(true);
-  }
-
   delay(100);
 
   if(!pwm_driver.begin())
@@ -827,20 +832,6 @@ void initialize_message_data() {
   orientation_msg.position.x = 0;
   orientation_msg.position.y = 0;
   orientation_msg.position.z = 0;
-}
-
-void get_imu() {
-      bno_euler_data = bno.getVector(Adafruit_BNO055::VECTOR_EULER);
-      yaw = bno_euler_data.x();
-      pitch = bno_euler_data.y();
-      roll = -bno_euler_data.z();
-      bno.getCalibration(&bno_sys_cal, &bno_gyro_cal, &bno_acc_cal, &bno_mag_cal);
-}
-
-void get_baro() {
-  baro.read();
-  baro_depth_data = baro.depth();
-  z = baro_depth_data - surface_offset;
 }
 
 void get_battery() {
