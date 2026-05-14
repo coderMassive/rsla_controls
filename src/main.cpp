@@ -84,7 +84,9 @@ bool startup_successful = true;
 bool vehicle_armed = false;
 
 float x = 0;
+float x_setpoint = 0;
 float y = 0;
+float y_setpoint = 0;
 float z = 0;
 
 float yaw = 0;
@@ -179,8 +181,8 @@ enum class ControllerMode : uint8_t
   POSITION = 1
 };
 
-ControllerMode x_mode = ControllerMode::EFFORT;
-ControllerMode y_mode = ControllerMode::EFFORT;
+ControllerMode x_mode = ControllerMode::POSITION;
+ControllerMode y_mode = ControllerMode::POSITION;
 ControllerMode z_mode = ControllerMode::POSITION;
 ControllerMode roll_mode = ControllerMode::POSITION;
 ControllerMode pitch_mode = ControllerMode::POSITION;
@@ -404,6 +406,8 @@ void orientation_callback(rcl_timer_t* timer, int64_t last_call_time)
     orientation_msg.orientation.pitch = pitch;
     orientation_msg.orientation.roll = roll;
 
+    orientation_msg.position.x = x;
+    orientation_msg.position.y = y;
     orientation_msg.position.z = z;
 
     RCSOFTCHECK(rcl_publish(&orientation_publisher, &orientation_msg, NULL));
@@ -471,13 +475,13 @@ void pose_setpoint_callback(const void *msgin)
   if(msg->mask & 1)
   {
     x_mode = ControllerMode::POSITION;
-    x_controller.setpoint = msg->cmd.position.x;
+    x_setpoint = msg->cmd.position.x;
   }
   // Y controller
   if(msg->mask & 2)
   {
     y_mode = ControllerMode::POSITION;
-    y_controller.setpoint = msg->cmd.position.y;
+    y_setpoint = msg->cmd.position.y;
   }
   // Z controller
   if(msg->mask & 4)
@@ -650,33 +654,33 @@ void diagnostic_command_callback(const void *msgin)
 // DVL callback
 void dvl_callback(const void* msgin)
 {
-    const geometry_msgs__msg__Point* msg = (const geometry_msgs__msg__Point*)msgin;
-    x = msg->x;
-    y = msg->y;
+  const geometry_msgs__msg__Point* msg = (const geometry_msgs__msg__Point*)msgin;
+  x = msg->x;
+  y = msg->y;
 }
 
 // AHRS quaternion callback
 void quaternion_callback(const void* msgin)
 {
-    const geometry_msgs__msg__Quaternion* q = (const geometry_msgs__msg__Quaternion*)msgin;
+  const geometry_msgs__msg__Quaternion* q = (const geometry_msgs__msg__Quaternion*)msgin;
 
-    // Conversion to Euler Angles from Quaternion
-    // roll (x-axis rotation)
-    double sinr_cosp = 2 * (q->w * q->x + q->y * q->z);
-    double cosr_cosp = 1 - 2 * (q->x * q->x + q->y * q->y);
-    roll = atan2(sinr_cosp, cosr_cosp);
+  // Conversion to Euler Angles from Quaternion
+  // roll (x-axis rotation)
+  double sinr_cosp = 2 * (q->w * q->x + q->y * q->z);
+  double cosr_cosp = 1 - 2 * (q->x * q->x + q->y * q->y);
+  roll = atan2(sinr_cosp, cosr_cosp) * 180 / M_PI;
 
-    // pitch (y-axis rotation)
-    double sinp = 2 * (q->w * q->y - q->z * q->x);
-    if (abs(sinp) >= 1)
-        pitch = copysign(M_PI / 2, sinp); // use 90 degrees if out of range
-    else
-        pitch = asin(sinp);
+  // pitch (y-axis rotation)
+  double sinp = 2 * (q->w * q->y - q->z * q->x);
+  if (abs(sinp) >= 1)
+      pitch = copysign(90, sinp); // use 90 degrees if out of range
+  else
+      pitch = asin(sinp) * 180 / M_PI;
 
-    // yaw (z-axis rotation)
-    double siny_cosp = 2 * (q->w * q->z + q->x * q->y);
-    double cosy_cosp = 1 - 2 * (q->y * q->y + q->z * q->z);
-    yaw = atan2(siny_cosp, cosy_cosp);
+  // yaw (z-axis rotation)
+  double siny_cosp = 2 * (q->w * q->z + q->x * q->y);
+  double cosy_cosp = 1 - 2 * (q->y * q->y + q->z * q->z);
+  yaw = atan2(siny_cosp, cosy_cosp) * 180 / M_PI;
 }
 
 // Create ROS entities
@@ -823,6 +827,24 @@ void initialize_controllers() {
   pitch_controller.derivativeMode = RSLA::DerivativeMode::DERIVATIVE_ON_MEASUREMENT;
   yaw_controller.derivativeMode = RSLA::DerivativeMode::DERIVATIVE_ON_MEASUREMENT;
 
+  x_controller.kP = 30.0;
+  x_controller.kI = 1.0;
+  x_controller.kD = 10.0;
+  x_controller.antiwindup = 2.0;
+  x_controller.enableAntiwindup = true;
+  x_controller.bias = 0.0;
+  x_controller.constraint = 15.0;
+  x_controller.enableConstraint = true;
+
+  y_controller.kP = 30.0;
+  y_controller.kI = 1.0;
+  y_controller.kD = 10.0;
+  y_controller.antiwindup = 2.0;
+  y_controller.enableAntiwindup = true;
+  y_controller.bias = 0.0;
+  y_controller.constraint = 15.0;
+  y_controller.enableConstraint = true;
+
   z_controller.kP = 30.0;
   z_controller.kI = 1.0;
   z_controller.kD = 10.0;
@@ -881,8 +903,11 @@ void update_pids(float dt) {
   yaw_controller.update(yaw, dt);
   pitch_controller.update(pitch, dt);
   roll_controller.update(roll, dt);
-  x_controller.update(x, dt);
-  y_controller.update(y, dt);
+  float theta = yaw * M_PI / 180;
+  float delta_x = x - x_setpoint;
+  float delta_y = y - y_setpoint;
+  x_controller.update(delta_x*cos(theta) + delta_y*sin(theta), dt);
+  y_controller.update(-delta_x*sin(theta) + delta_y*cos(theta), dt);
   z_controller.update(z, dt);
 }
 
